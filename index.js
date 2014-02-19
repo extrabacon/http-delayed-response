@@ -31,6 +31,15 @@ var DelayedResponse = function (req, res, next) {
 util.inherits(DelayedResponse, EventEmitter);
 
 /**
+ * Shorthand for adding the "Content-Type" header for returning JSON.
+ * @return {DelayedResponse} The same instance, for chaining calls
+ */
+DelayedResponse.prototype.json = function () {
+    this.res.setHeader('Content-Type', 'application/json');
+    return this;
+};
+
+/**
  * Starts the polling process, keeping the connection alive.
  * @param  {Number} interval     The interval at which "heartbeat" events are emitted
  * @param  {Number} initialDelay The initial delay before starting the polling process

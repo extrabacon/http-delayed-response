@@ -140,8 +140,8 @@ describe('DelayedResponse', function () {
             it('should render JSON when ending with an object', function (done) {
                 var app = express();
                 app.use(function (req, res) {
-                    res.set('Content-Type', 'application/json');
                     var delayed = new DelayedResponse(req, res);
+                    delayed.json();
                     delayed.start(100, 0);
                     setTimeout(function () {
                         delayed.end(null, { success: true });
@@ -170,8 +170,8 @@ describe('DelayedResponse', function () {
             it('should wait for promise resolution', function (done) {
                 var app = express();
                 app.use(function (req, res) {
-                    res.set('Content-Type', 'application/json');
                     var delayed = new DelayedResponse(req, res);
+                    delayed.json();
                     delayed.start(100, 0);
                     var promise = when.resolve({ success: true });
                     delayed.end(promise);
@@ -183,7 +183,6 @@ describe('DelayedResponse', function () {
             it('should wait for promise rejection', function (done) {
                 var app = express();
                 app.use(function (req, res) {
-                    res.set('Content-Type', 'application/json');
                     var delayed = new DelayedResponse(req, res);
                     delayed.start(100, 0);
                     var promise = when.reject(new Error('failure'));
