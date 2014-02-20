@@ -1,11 +1,11 @@
 {
   "name": "http-delayed-response",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "author": {
     "name": "Nicolas Mercier",
     "email": "nicolas@extrabacon.net"
   },
-  "description": "Super simple HTTP long-polling module for delaying a response while keeping the connection alive",
+  "description": "Simple module for delaying a response, optionally with long-polling support",
   "keywords": [
     "http",
     "response",
@@ -26,10 +26,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "http://github.com/extrabacon/http-long-polling"
+    "url": "http://github.com/extrabacon/http-delayed-response"
   },
-  "homepage": "http://github.com/extrabacon/http-long-polling",
-  "bugs": "http://github.com/extrabacon/http-long-polling/issues",
+  "homepage": "http://github.com/extrabacon/http-delayed-response",
+  "bugs": "http://github.com/extrabacon/http-delayed-response/issues",
   "engines": {
     "node": ">=0.10"
   }

@@ -1,31 +1,10 @@
 # http-delayed-response
 
-A fast and easy way to delay a response with HTTP long-polling, making sure the connection stays alive until the data to send is available. Use this module to prevent request timeouts on platforms such as Heroku (error H12) or connection errors on aggressive firewalls.
+A fast and easy way to delay a response until results are available. Use this module to respond appropriately with status [HTTP 202 Accepted](http://en.wikipedia.org/wiki/List_of_HTTP_status_codes#2xx_Success) when the result cannot be determined within an acceptable delay. Supports HTTP long-polling for longer delays, ensuring the connection stays alive until the result is available for working around platform limitations such as error H12 on Heroku or connection errors from aggressive firewalls.
 
-The module replaces your standard response with a long-polling [HTTP 202](http://en.wikipedia.org/wiki/List_of_HTTP_status_codes#2xx_Success) response, waiting on either a callback or a promise. The connection is kept alive by writing non-significant bytes to the response at a given interval.
+Works with any Node HTTP server based on [ClientRequest](http://nodejs.org/api/http.html#http_class_http_clientrequest) and [ServerResponse](http://nodejs.org/api/http.html#http_class_http_serverresponse), including Express applications (can be used as standard middleware).
 
-Works with any Node.js HTTP server, including Express applications (can be used as standard middleware). This module has no dependencies.
-
-```js
-// without http-delayed-response
-app.use(function (req, res) {
-  // if getData takes longer than 30 seconds, Heroku will close the connection with error H12
-  getData(function (err, data) {
-    res.json(data);
-  });
-});
-
-// with http-delayed-response
-app.use(function (req, res) {
-  var delayed = new DelayedResponse(req, res);
-  res.set('Content-Type', 'application/json');
-  // when calling "start", bytes are written periodically to keep the connection alive
-  // since bytes written are insignificant, the response can still be parsed as JSON
-  getData(delayed.start());
-});
-```
-
-Note: This module is experimental and is not ready for production use.
+Note: This module is purely experimental and is not ready for production use.
 
 ## Installation
 
@@ -38,60 +17,108 @@ To run the tests:
 npm test
 ```
 
-## Examples
+This module has no dependencies.
 
-For simplicity, all examples are depicted as Express middleware. However, any Node.js HTTP server based on http.ClientRequest and http.ServerResponse is supported.
+## Features
 
-### Waiting for a very long function to invoke its callback
+For simplicity, all examples are depicted as Express middleware.
 
-This example waits for a very slow function, rendering its return value into the response.
+### Waiting for a function to invoke its callback
+
+This example waits for a slow function indefinitely, rendering its return value into the response. The `wait` method returns a callback that you can use to handle results.
 
 ```js
+
+function slowFunction (callback) {
+  // let's do something that could take a while...
+}
+
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
-  verySlowFunction(delayed.start());
+  slowFunction(delayed.wait());
 });
 ```
 
 ### Using promises instead of callbacks
 
-Same thing, except that `verySlowFunction` returns a promise.
+Same thing, except the function returns a promise instead of invoking a callback. Use the `end` method to handle promises.
 
 ```js
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
-  delayed.start();
-  var promise = verySlowFunction();
+  delayed.wait();
+  var promise = slowFunction();
+  // will eventually end when the promise is fulfilled
   delayed.end(promise);
 });
 ```
 
-### Rendering JSON
+### Handling results and timeouts
 
-You are responsible for writing headers before starting the delayed response. If the returned data needs to be rendered as JSON, set the "content-type" header beforehand.
+Use the "done" event to handle the response when the function returns successfully within the allocated time. Otherwise, use the "cancel" event to handle the response. During a timeout, the response is automatically set to status 202.
 
 ```js
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
-  res.set('Content-Type', 'application/json');
+
+  delayed.on('done', function (results) {
+    // slowFunction responded within 5 seconds
+    res.json(results);
+  }).on('cancel', function () {
+    // slowFunction failed to invoke its callback within 5 seconds
+    // response has been set to HTTP 202
+    res.write('sorry, this will take longer than expected...');
+    res.end();
+  });
+
+  slowFunction(delayed.wait(5000));
+});
+```
+
+### Extended delays and long-polling
+
+If the function takes even longer to complete, we might face connectivity issues. For example, Heroku aborts the request if not a single byte is written within 30 seconds. To counter this situation, activate long-polling to keep the connection alive while waiting on the results. Use the `start` method instead of `wait` to periodically write non-significant bytes to the response.
+
+```js
+app.use(function (req, res) {
+  var delayed = new DelayedResponse(req, res);
+  // verySlowFunction can now run indefinitely
+  verySlowFunction(delayed.start());
+});
+```
+
+Long-polling is continuously writing spaces (char \x20) to the response body in order to prevent connection termination. Remember that using long-polling makes handling the response a little different, since HTTP status 202 and headers are already sent to the client.
+
+### Rendering JSON with long-polling
+
+You are responsible for writing headers before enabling long-polling. If the return value needs to be rendered as JSON, set "Content-Type" beforehand, or use the `json` method as a shortcut.
+
+```js
+app.use(function (req, res) {
+  var delayed = new DelayedResponse(req, res);
+  // shortcut for res.setHeader('Content-Type', 'application/json')
+  delayed.json();
   // starting will write to the body - headers must be set before
   verySlowFunction(delayed.start());
 });
 ```
 
-### Polling with Mongoose
+### Polling a database
 
-This example polls a MongoDB collection with Mongoose until a particular document is returned. The resulting document is rendered in the response as JSON. The "poll" event is used to periodically query the database.
+When long-polling is enabled, use the "poll" event to monitor a condition for ending the response. This example polls a MongoDB collection with Mongoose until a particular document is returned. The resulting document is rendered in the response as JSON.
 
 ```js
 app.use(function (req, res) {
-  res.set('Content-Type', 'application/json');
   var delayed = new DelayedResponse(req, res);
 
-  delayed.on('poll', function () {
+  delayed.json().on('poll', function () {
     // "poll" event will occur every 5 seconds
     Model.findOne({ /* criteria */}, function (err, result) {
-      if (result) {
+      if (err) {
+        // end with an error
+        delayed.end(err);
+      } else if (result) {
+        // end with the resulting document
         delayed.end(null, result);
       }
     });
@@ -102,108 +129,164 @@ app.use(function (req, res) {
 
 ### Handling the response
 
-By default, the callback result is rendered into the response body. More precisely,
-  - when returning null or undefined, the response is ended with no additional content
-  - when returning a string or a buffer, result is written as-is
+By default, the callback result is rendered into the response body. More precisely:
+  - when returning `null` or `undefined`, the response is ended with no additional content
+  - when returning a `string` or a `Buffer`, it is written as-is
   - when returning a readable stream, the result is piped into the response
   - when returning anything else, the result is rendered using `JSON.stringify`
 
-It is possible to handle the response manually if the default behavior is not appropriate. Be careful: only the body of the response can be written to, since headers are necessarily already sent. When handling the response manually, you are responsible for ending the response.
+It is possible to handle the response manually if the default behavior is not appropriate. Be careful: headers are necessarily already sent when the "done" handler is called. When handling the response manually, you are responsible for ending it appropriately.
 
 ```js
 app.use(function (req, res) {
-  res.set('Content-Type', 'application/json');
   var delayed = new DelayedResponse(req, res);
 
   delayed.on('done', function (data) {
-    // handle "data" anyway you want, but do not forget to end the response!
+    // handle "data" anyway you want, but don't forget to end the response!
     res.end();
-  }).start();
+  }).wait();
 
 });
 ```
 
 ### Handling errors
 
-To handle errors, simply subscribe to the "error" event, as unhandled errors will be thrown. Remember that HTTP status 202 is already applied and the HTTP protocol has no mechanism to indicate an error past this point. When handling errors, you are responsible for ending the response.
+To handle errors, use the "error" event. Otherwise, unhandled errors will be thrown. When using long-polling, HTTP status 202 is already applied and the HTTP protocol has no mechanism to indicate an error past this point. Also, when handling errors, you are responsible for ending the response.
+
+Also, a timeout that is not handled with a "cancel" event is treated like a normal error.
 
 ```js
 app.use(function (req, res) {
-  res.set('Content-Type', 'application/json');
   var delayed = new DelayedResponse(req, res);
 
   delayed.on('error', function (err) {
-    // write a JSON error, assuming the client can interpret the result
-    var error = { error: 'server_error', details: 'An error occurred on the server' };
-    res.end(JSON.stringify(error));
-  }).start();
+    // handle error here
+    // timeout will also raise an error since there is no "cancel" handler
+  });
+
+  slowFunction(delayed.wait(5000));
 
 });
 ```
 
-Errors can also be handled with Express middleware by supplying the `next` parameter to the constructor.
+Errors can also be handled with Connect or Express middleware by supplying the `next` parameter to the constructor.
 
 ```js
 app.use(function (req, res, next) {
-  res.set('Content-Type', 'application/json');
   var delayed = new DelayedResponse(req, res, next);
-  // "next" will be invoked if "verySlowFunction" fails
-  verySlowFunction(delayed.start(1000));
+  // "next" will be invoked if "slowFunction" fails or times out
+  slowFunction(delayed.wait(1000));
 });
 ```
 
 ### Handling aborted requests
 
-By default, a response is ended with no additional content if the client aborts the request before completion. If you need to handle an aborted request, simply subscribe to the "abort" event. When handling client disconnects, you are responsible for ending the response.
+By default, a response is ended with no additional content if the client aborts the request before completion. If you need to handle an aborted request, attach the "abort" event. When handling client disconnects, you are responsible for ending the response.
 
 ```js
 app.use(function (req, res) {
-  res.set('Content-Type', 'application/json');
   var delayed = new DelayedResponse(req, res);
 
   delayed.on('abort', function (err) {
     // handle client disconnection
     res.end();
-  }).start();
+  });
+
+  // wait indefinitely
+  slowFunction(delayed.wait());
 
 });
 ```
 
-### Keeping the connection alive
+### Keeping the connection alive with long-polling
 
-By default, the connection is kept alive by writing a single space to the response at the specified interval (default is 100msec).
+By default, when using long-polling, the connection is kept alive by writing a single space to the response at the specified interval (default is 100msec).
 
 ```js
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
-  // write a "\x20" every second
+  // write a "\x20" every second, until function is completed
   verySlowFunction(delayed.start(1000));
 });
 ```
 
-An initial delay before the first byte can also be specified.
+An initial delay before the first byte can also be specified (default is also 100msec).
 
 ```js
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
-  // write a "\x20" every second after 10 seconds
+  // write a "\x20" every second after 10 seconds, until function is completed
   verySlowFunction(delayed.start(1000, 10000));
 });
 ```
 
-To avoid H12 errors in Heroku, initial delay must be under 30 seconds and polling must then occur under 55 seconds. See https://devcenter.heroku.com/articles/request-timeout for more details.
+To avoid H12 errors in Heroku, initial delay must be under 30 seconds and at least 1 byte must be written every 55 seconds. See https://devcenter.heroku.com/articles/request-timeout for more details.
 
-To manually keep the connection alive, subscribe to the "heartbeat" event.
+To manually keep the connection alive, attach the "heartbeat" event.
 
 ```js
 app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
   delayed.on('heartbeat', function () {
-    // anything you need to do to keep the connection alive - will be called every second
+    // anything you need to do to keep the connection alive
   });
   verySlowFunction(delayed.start(1000));
 });
 ```
+
+## API Reference
+
+#### DelayedResponse(req, res, next)
+
+Creates a `DelayedResponse` instance. Parameters represent the usual middleware signature.
+
+#### DelayedResponse.wait(timeout)
+
+Returns a callback handler that must be invoked within the allocated time.
+
+#### DelayedResponse.start(interval, initialDelay, timeout)
+
+Starts long-polling for the delayed response, sending headers and HTTP status 202.
+
+Polling will occur at the specified `interval`, starting after `initialDelay`.
+
+Returns a callback handler, same as `DelayedResponse.end`.
+
+#### DelayedResponse.end(err, data)
+
+Stops waiting and sends the response contents represented by `data` - or invoke the error handler if an error is present.
+
+#### DelayedResponse.stop()
+
+Stops long polling and timeout timers without affecting the response.
+
+#### DelayedResponse.json()
+
+Shortcut for setting the "Content-Type" header to "application/json". Returns itself for chaining calls.
+
+#### Event: 'done'
+
+Fired when `end` is invoked without an error.
+
+#### Event: 'cancel'
+
+Fired when `end` failed to be invoked within the allocated time.
+
+#### Event: 'error'
+
+Fired when `end` is invoked with an error, or when an unhandled timeout occurs.
+
+#### Event: 'abort'
+
+Fired when the request is closed.
+
+#### Event: 'poll'
+
+Fired continuously at the specified interval when invoking `start`.
+
+#### Event: 'heartbeat'
+
+Fired continuously at the specified interval when invoking `start`. Can be used to override the "keep-alive" mechanism.
 
 ## Compatibility
 
