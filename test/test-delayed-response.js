@@ -6,7 +6,59 @@ var DelayedResponse = require('../');
 require('should');
 
 describe('DelayedResponse', function () {
-    describe('.start(interval, initialDelay)', function () {
+    describe('.wait(timeout)', function () {
+        it('should return a callback handler', function (done) {
+            var app = express();
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.wait().should.be.a.Function;
+                res.end();
+            });
+            request(app).get('/').expect(200, done);
+        });
+        it('should cancel after timeout', function (done) {
+            var app = express();
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.on('cancel', function () {
+                    res.end();
+                    done();
+                }).wait(100);
+            });
+            request(app).get('/').end(function () {});
+        });
+        it('should throw after timeout without cancel handler', function (done) {
+            var app = express();
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.on('error', function (err) {
+                    err.message.should.be.exactly('timeout occurred');
+                    res.status(500).end();
+                });
+                delayed.wait(100);
+            });
+            request(app).get('/').expect(500).end(done);
+        });
+        it('should not poll', function (done) {
+            var app = express();
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.on('poll', function () {
+                    throw new Error('should not poll');
+                }).on('heartbeat', function (args) {
+                    throw new Error('should not poll');
+                }).json().wait(200);
+                setTimeout(function () {
+                    delayed.end(null, { success: true });
+                }, 100);
+            });
+            request(app).get('/')
+                .expect(200)
+                .expect({ success: true })
+                .end(done);
+        });
+    });
+    describe('.start(interval, initialDelay, timeout)', function () {
         it('should return a callback handler', function (done) {
             var app = express();
             app.use(function (req, res) {
@@ -46,6 +98,17 @@ describe('DelayedResponse', function () {
                 done();
             });
         });
+        it('should cancel after timeout', function (done) {
+            var app = express();
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.on('cancel', function () {
+                    done();
+                }).start(50, 0, 100);
+                res.end();
+            });
+            request(app).get('/').expect(202).end(function () {});
+        });
         it('should throw when started twice', function (done) {
             var app = express();
             app.use(function (req, res) {
@@ -72,7 +135,7 @@ describe('DelayedResponse', function () {
             });
             request(app).get('/').expect(202, done);
         });
-        it('should stop polling when request is aborted', function (done) {
+        it('should stop when request is aborted', function (done) {
             var app = express();
             app.use(function (req, res) {
                 var delayed = new DelayedResponse(req, res);
@@ -238,7 +301,7 @@ describe('DelayedResponse', function () {
                 var app = express();
                 app.use(function (req, res, next) {
                     var delayed = new DelayedResponse(req, res, next);
-                    delayed.start();
+                    delayed.wait();
                     setTimeout(function () {
                         (function () {
                             delayed.end(new Error('failure'));

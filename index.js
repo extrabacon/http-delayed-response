@@ -2,8 +2,16 @@ var stream = require('stream');
 var EventEmitter = require('events').EventEmitter;
 var util = require('util');
 
+var TimeoutError = function () {
+    var err = Error.apply(this, arguments);
+    this.stack = err.stack;
+    this.message = err.message;
+    return this;
+};
+
 /**
- * Creates a new DelayedResponse instance, wrapping an HTTP DelayedResponse.
+ * Creates a new DelayedResponse instance.
+ *
  * @param {http.ClientRequest}   req  The incoming HTTP request
  * @param {http.ServerResponse}  res  The HTTP response to delay
  * @param {Function}             next The next function to invoke, when DelayedResponse is used as middleware with
@@ -17,9 +25,7 @@ var DelayedResponse = function (req, res, next) {
     var delayed = this;
     this.req = req;
     this.res = res;
-    this.res.statusCode = 202;
     this.next = next;
-    this.heartbeatChar = ' ';
 
     // if request is aborted, end the response immediately
     req.on('close', function () {
@@ -40,12 +46,38 @@ DelayedResponse.prototype.json = function () {
 };
 
 /**
- * Starts the polling process, keeping the connection alive.
+ * Waits for callback results without long-polling.
+ *
+ * @param  {Number} timeout The maximum amount of time to wait before cancelling
+ * @return {Function}       The callback handler to use to end the delayed response (same as DelayedResponse.end).
+ */
+DelayedResponse.prototype.wait = function (timeout) {
+
+    if (this.started) throw new Error('instance already started');
+    var delayed = this;
+
+    // setup the cancel timer
+    if (timeout) {
+        this.timeout = setTimeout(function () {
+            // timeout implies status is unknown, set HTTP Accepted status
+            delayed.res.statusCode = 202;
+            delayed.end(new TimeoutError('timeout occurred'));
+        }, timeout);
+    }
+
+    return this.end.bind(delayed);
+};
+
+/**
+ * Starts long-polling to keep the connection alive while waiting for the callback results.
+ * Also sets the response to status code 202 (Accepted).
+ *
  * @param  {Number} interval     The interval at which "heartbeat" events are emitted
  * @param  {Number} initialDelay The initial delay before starting the polling process
+ * @param  {Number} timeout      The maximum amount of time to wait before cancelling
  * @return {Function}            The callback handler to use to end the delayed response (same as DelayedResponse.end).
  */
-DelayedResponse.prototype.start = function (interval, initialDelay) {
+DelayedResponse.prototype.start = function (interval, initialDelay, timeout) {
 
     if (this.started) throw new Error('instance already started');
 
@@ -53,8 +85,11 @@ DelayedResponse.prototype.start = function (interval, initialDelay) {
     interval = interval || 100;
     initialDelay = typeof initialDelay === 'undefined' ? interval : initialDelay;
 
-    // disable socket buffering - make sure all content is sent immediately
-    this.res.socket.setNoDelay();
+    // set HTTP Accepted status code
+    this.res.statusCode = 202;
+
+    // disable socket buffering: make sure content is flushed immediately during long-polling
+    this.res.socket && this.res.socket.setNoDelay();
 
     // start the polling timer
     setTimeout(function () {
@@ -62,17 +97,25 @@ DelayedResponse.prototype.start = function (interval, initialDelay) {
     }, initialDelay);
     this.started = true;
 
+    // setup the cancel timer
+    if (timeout) {
+        this.timeout = setTimeout(function () {
+            delayed.end(new TimeoutError('timeout occurred'));
+        }, timeout);
+    }
+
     return this.end.bind(delayed);
 };
 
 function heartbeat() {
     // always emit "poll" event
     this.emit('poll');
+    // if "heartbeat" event is attached, delegate to handlers
     if (this.listeners('heartbeat').length) {
         return this.emit('heartbeat');
     }
-    // default behavior: write the heartbeat character (a space by default)
-    this.res.write(this.heartbeatChar);
+    // default behavior: write the heartbeat character (a space)
+    this.res.write(' ');
 }
 
 function abort() {
@@ -94,7 +137,10 @@ function abort() {
 DelayedResponse.prototype.end = function (err, data) {
 
     // prevent double processing
-    if (this.stopped) return;
+    if (this.stopped) {
+        console.warn('DelayedResponse.end has been called twice!');
+        return;
+    }
 
     // detect a promise-like object
     if (err && 'then' in err && typeof err.then === 'function') {
@@ -109,12 +155,13 @@ DelayedResponse.prototype.end = function (err, data) {
         });
     }
 
-    // stop the polling timer
     this.stop();
 
     // handle an error
     if (err) {
-        if (this.listeners('error').length) {
+        if (err instanceof TimeoutError && this.listeners('cancel').length) {
+            return this.emit('cancel');
+        } else if (this.listeners('error').length) {
             return this.emit('error', err);
         } else if (this.next) {
             return this.next(err);
@@ -140,14 +187,15 @@ DelayedResponse.prototype.end = function (err, data) {
 };
 
 /**
- * Stops this delayed response without impacting the HTTP response.
+ * Stops long-polling without affecting the response.
  */
 DelayedResponse.prototype.stop = function () {
-    // restore socket buffering
-    this.res.socket.setNoDelay(false);
     // stop polling
-    clearInterval(this.pollingTimer);
-    this.stopped = true;
+    this.pollingTimer && clearInterval(this.pollingTimer);
+    // stop timeout
+    this.timeout && clearTimeout(this.timeout);
+    // restore socket buffering
+    this.res.socket && this.res.socket.setNoDelay(false);
 };
 
 module.exports = DelayedResponse;
