@@ -98,7 +98,7 @@ app.use(function (req, res) {
   var delayed = new DelayedResponse(req, res);
   // shortcut for res.setHeader('Content-Type', 'application/json')
   delayed.json();
-  // starting will write to the body - headers must be set before
+  // start activates long-polling - headers must be set before
   verySlowFunction(delayed.start());
 });
 ```
@@ -144,16 +144,16 @@ app.use(function (req, res) {
   delayed.on('done', function (data) {
     // handle "data" anyway you want, but don't forget to end the response!
     res.end();
-  }).wait();
+  });
+
+  slowFunction(delayed.wait());
 
 });
 ```
 
 ### Handling errors
 
-To handle errors, use the "error" event. Otherwise, unhandled errors will be thrown. When using long-polling, HTTP status 202 is already applied and the HTTP protocol has no mechanism to indicate an error past this point. Also, when handling errors, you are responsible for ending the response.
-
-Also, a timeout that is not handled with a "cancel" event is treated like a normal error.
+To handle errors, use the "error" event. Otherwise, unhandled errors will be thrown. Timeouts that are not handled with a "cancel" event are treated like normal errors. When using long-polling, HTTP status 202 is already applied and the HTTP protocol has no mechanism to indicate an error past this point. Also, when handling errors, you are responsible for ending the response.
 
 ```js
 app.use(function (req, res) {
@@ -174,7 +174,7 @@ Errors can also be handled with Connect or Express middleware by supplying the `
 ```js
 app.use(function (req, res, next) {
   var delayed = new DelayedResponse(req, res, next);
-  // "next" will be invoked if "slowFunction" fails or times out
+  // "next" will be invoked if "slowFunction" fails or take longer than 1 second to return
   slowFunction(delayed.wait(1000));
 });
 ```
@@ -192,7 +192,7 @@ app.use(function (req, res) {
     res.end();
   });
 
-  // wait indefinitely
+  // wait indefinitely - client might get bored...
   slowFunction(delayed.wait());
 
 });
@@ -242,7 +242,9 @@ Creates a `DelayedResponse` instance. Parameters represent the usual middleware 
 
 #### DelayedResponse.wait(timeout)
 
-Returns a callback handler that must be invoked within the allocated time.
+Returns a callback handler that must be invoked within the allocated time represented by `timeout`.
+
+The returned handler is the same as calling `DelayedResponse.end`.
 
 #### DelayedResponse.start(interval, initialDelay, timeout)
 
@@ -254,11 +256,11 @@ Returns a callback handler, same as `DelayedResponse.end`.
 
 #### DelayedResponse.end(err, data)
 
-Stops waiting and sends the response contents represented by `data` - or invoke the error handler if an error is present.
+Stops waiting, sending the contents represented by `data` in the response - or invoke the error handler if an error is present.
 
 #### DelayedResponse.stop()
 
-Stops long polling and timeout timers without affecting the response.
+Stops monitoring timers without affecting the response.
 
 #### DelayedResponse.json()
 
@@ -266,15 +268,15 @@ Shortcut for setting the "Content-Type" header to "application/json". Returns it
 
 #### Event: 'done'
 
-Fired when `end` is invoked without an error.
-
-#### Event: 'cancel'
-
-Fired when `end` failed to be invoked within the allocated time.
+Fired when `end` is invoked without an error. If this event is not handled, the callback result is written in the response.
 
 #### Event: 'error'
 
-Fired when `end` is invoked with an error, or when an unhandled timeout occurs.
+Fired when `end` is invoked with an error. If this event is not handled, the error is thrown as an uncaught error.
+
+#### Event: 'cancel'
+
+Fired when `end` failed to be invoked within the allocated time. If this event is not handled, the timeout is considered a normal error that can be handled using the `error` event.
 
 #### Event: 'abort'
 
