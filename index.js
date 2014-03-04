@@ -31,6 +31,10 @@ var DelayedResponse = function (req, res, next) {
     req.on('close', function () {
         abort.call(delayed);
     });
+    // make sure timers stop if response is closed
+    res.on('close', function () {
+        delayed.stop();
+    });
 
     EventEmitter.call(this);
 };
@@ -157,6 +161,9 @@ DelayedResponse.prototype.end = function (err, data) {
 
     this.stop();
 
+    // restore socket buffering
+    this.res.socket && this.res.socket.setNoDelay(false);
+
     // handle an error
     if (err) {
         if (err instanceof TimeoutError && this.listeners('cancel').length) {
@@ -191,11 +198,11 @@ DelayedResponse.prototype.end = function (err, data) {
  */
 DelayedResponse.prototype.stop = function () {
     // stop polling
-    this.pollingTimer && clearInterval(this.pollingTimer);
+    clearInterval(this.pollingTimer);
+    this.pollingTimer = null;
     // stop timeout
-    this.timeout && clearTimeout(this.timeout);
-    // restore socket buffering
-    this.res.socket && this.res.socket.setNoDelay(false);
+    clearTimeout(this.timeout);
+    this.timeout = null;
 };
 
 module.exports = DelayedResponse;
