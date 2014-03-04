@@ -26,13 +26,16 @@ var DelayedResponse = function (req, res, next) {
     this.req = req;
     this.res = res;
     this.next = next;
+    this.timers = {};
 
     // if request is aborted, end the response immediately
     req.on('close', function () {
         abort.call(delayed);
     });
-    // make sure timers stop if response is closed
+    // make sure timers stop if response is ended or closed
     res.on('close', function () {
+        delayed.stop();
+    }).on('finish', function () {
         delayed.stop();
     });
 
@@ -62,7 +65,7 @@ DelayedResponse.prototype.wait = function (timeout) {
 
     // setup the cancel timer
     if (timeout) {
-        this.timeout = setTimeout(function () {
+        this.timers.timeout = setTimeout(function () {
             // timeout implies status is unknown, set HTTP Accepted status
             delayed.res.statusCode = 202;
             delayed.end(new TimeoutError('timeout occurred'));
@@ -95,15 +98,15 @@ DelayedResponse.prototype.start = function (interval, initialDelay, timeout) {
     // disable socket buffering: make sure content is flushed immediately during long-polling
     this.res.socket && this.res.socket.setNoDelay();
 
-    // start the polling timer
-    setTimeout(function () {
-        delayed.pollingTimer = setInterval(heartbeat.bind(delayed), interval);
+    // start the polling and initial delay timers
+    this.timers.initialDelay = setTimeout(function () {
+        delayed.timers.poll = setInterval(heartbeat.bind(delayed), interval);
     }, initialDelay);
     this.started = true;
 
     // setup the cancel timer
     if (timeout) {
-        this.timeout = setTimeout(function () {
+        this.timers.timeout = setTimeout(function () {
             delayed.end(new TimeoutError('timeout occurred'));
         }, timeout);
     }
@@ -140,12 +143,6 @@ function abort() {
  */
 DelayedResponse.prototype.end = function (err, data) {
 
-    // prevent double processing
-    if (this.stopped) {
-        console.warn('DelayedResponse.end has been called twice!');
-        return;
-    }
-
     // detect a promise-like object
     if (err && 'then' in err && typeof err.then === 'function') {
         var promise = err;
@@ -159,7 +156,9 @@ DelayedResponse.prototype.end = function (err, data) {
         });
     }
 
-    this.stop();
+    // prevent double processing
+    if (this.ended) return console.warn('DelayedResponse.end has been called twice!');
+    this.ended = true;
 
     // restore socket buffering
     this.res.socket && this.res.socket.setNoDelay(false);
@@ -197,12 +196,15 @@ DelayedResponse.prototype.end = function (err, data) {
  * Stops long-polling without affecting the response.
  */
 DelayedResponse.prototype.stop = function () {
+    // stop initial delay
+    clearTimeout(this.timers.initialDelay);
+    this.timers.initialDelay = null;
     // stop polling
-    clearInterval(this.pollingTimer);
-    this.pollingTimer = null;
+    clearInterval(this.timers.poll);
+    this.timers.poll = null;
     // stop timeout
-    clearTimeout(this.timeout);
-    this.timeout = null;
+    clearTimeout(this.timers.timeout);
+    this.timers.timeout = null;
 };
 
 module.exports = DelayedResponse;

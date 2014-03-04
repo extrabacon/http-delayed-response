@@ -103,11 +103,10 @@ describe('DelayedResponse', function () {
             app.use(function (req, res) {
                 var delayed = new DelayedResponse(req, res);
                 delayed.on('cancel', function () {
-                    done();
+                    res.end();
                 }).start(50, 0, 100);
-                res.end();
             });
-            request(app).get('/').expect(202).end(function () {});
+            request(app).get('/').expect(202, done);
         });
         it('should throw when started twice', function (done) {
             var app = express();
@@ -125,10 +124,15 @@ describe('DelayedResponse', function () {
     describe('.stop()', function () {
         it('should stop polling', function (done) {
             var app = express();
+            var stopping = false;
             app.use(function (req, res) {
                 var delayed = new DelayedResponse(req, res);
-                delayed.start(10);
+                delayed.on('poll', function () {
+                    if (stopping) throw new Error('should have stopped polling');
+                });
+                delayed.start(20);
                 setTimeout(function () {
+                    stopping = true;
                     delayed.stop();
                     res.end();
                 }, 100);
@@ -137,18 +141,38 @@ describe('DelayedResponse', function () {
         });
         it('should stop when request is aborted', function (done) {
             var app = express();
+            var aborting = false;
             app.use(function (req, res) {
                 var delayed = new DelayedResponse(req, res);
-                delayed.on('abort', function () {
+                delayed.on('poll', function () {
+                    if (aborting) throw new Error('should have stopped polling');
+                }).on('abort', function () {
                     res.end();
                     done();
                 }).start();
             });
             var req = request(app).get('/').end();
             setTimeout(function () {
+                aborting = true;
                 req.abort();
             }, 100);
         });
+        it('should stop when response is ended', function (done) {
+            var app = express();
+            var ending = false;
+            app.use(function (req, res) {
+                var delayed = new DelayedResponse(req, res);
+                delayed.on('poll', function () {
+                    if (ending) throw new Error('should have stopped polling');
+                }).start();
+                setTimeout(function () {
+                    ending = true;
+                    res.end();
+                }, 100);
+            });
+            request(app).get('/').expect(202, done);
+        });
+
     });
     describe('.end(err, data)', function () {
         describe('with default behavior', function () {
@@ -315,9 +339,6 @@ describe('DelayedResponse', function () {
                 });
                 request(app).get('/').expect(500).end(done);
             });
-        });
-        describe('with promises', function () {
-
         });
     });
 });
