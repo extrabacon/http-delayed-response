@@ -28,10 +28,12 @@ var DelayedResponse = function (req, res, next) {
     this.next = next;
     this.timers = {};
 
+    /*
     // if request is aborted, end the response immediately
     req.on('close', function () {
         abort.call(delayed);
     });
+    */
     // make sure timers stop if response is ended or closed
     res.on('close', function () {
         delayed.stop();
